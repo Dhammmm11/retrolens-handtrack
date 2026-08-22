@@ -536,7 +536,7 @@ class HandDetector:
             )
             return
 
-        # Modern Tasks API — VIDEO mode untuk temporal tracking
+        # Modern Tasks API -- VIDEO mode untuk temporal tracking
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision
 
@@ -649,6 +649,18 @@ class PortalProcessor:
         # Gestur Screenshot Layar (Tangan Kiri: Jempol + Kelingking)
         self._screenshot_hold_count = 0
         self._screenshot_fired = False
+
+        # Gestur Snap/Shoot (Finger Gun: Jempol snap ke bawah)
+        self._snap_prev_thumb_mid_dist: Dict[int, float] = {}  # Per hand_idx
+        self._snap_gun_pose_count: Dict[int, int] = {}  # Frame counter finger gun pose
+        self._snap_cooldown_sec: float = 3.0
+        self._snap_last_trigger: float = 0.0
+
+        # Snap Blur Effect State
+        self._snap_blur_active: bool = False
+        self._snap_blur_start_time: float = 0.0
+        self._snap_blur_duration: float = 2.5  # Detik
+        self._snap_blur_origin: Tuple[int, int] = (0, 0)  # Titik asal shockwave
 
         # Shutter flash animation & Toast notification
         self.flash_intensity = 0.0
@@ -923,6 +935,8 @@ class PortalProcessor:
         is_bowtie = False
         right_filter_pinch_active = False
         screenshot_gesture_active = False
+        snap_gesture_detected = False
+        snap_origin_pt = (self.cfg.frame_width // 2, self.cfg.frame_height // 2)
 
         # Bersihkan smooth data untuk tangan yang sudah hilang
         active_indices = set(range(len(hand_data)))
@@ -1003,6 +1017,55 @@ class PortalProcessor:
                         cv2.circle(frame, thumb_pt, 5, (200, 120, 255), -1)
                         cv2.circle(frame, pinky_pt, 5, (200, 120, 255), -1)
 
+                # =========================================================
+                # Gestur 3 (KEDUA TANGAN): Finger Gun Snap -> BLUR EFFECT
+                # Pose: Jari telunjuk lurus, jempol atas, tengah/manis/kelingking
+                # ditekuk. Snap = jempol cepat turun ke jari tengah.
+                # =========================================================
+                index_tip = smoothed[8]    # Ujung telunjuk
+                index_pip = smoothed[6]    # Sendi PIP telunjuk
+                middle_tip = smoothed[12]  # Ujung jari tengah
+                middle_pip = smoothed[10]  # Sendi PIP jari tengah
+                ring_tip = smoothed[16]    # Ujung jari manis
+                ring_pip = smoothed[14]    # Sendi PIP jari manis
+                pinky_pip = smoothed[17]   # Sendi PIP kelingking
+                wrist = smoothed[0]
+
+                # Cek pose "Finger Gun":
+                # 1. Telunjuk harus lurus (tip lebih jauh dari wrist daripada PIP)
+                # 2. Jari tengah, manis, kelingking harus ditekuk (tip dekat PIP)
+                index_extended = GeometryUtils.euclidean_dist(index_tip, wrist) > GeometryUtils.euclidean_dist(index_pip, wrist) * 1.15
+                middle_curled = GeometryUtils.euclidean_dist(middle_tip, wrist) < GeometryUtils.euclidean_dist(middle_pip, wrist) * 1.2
+                ring_curled = GeometryUtils.euclidean_dist(ring_tip, wrist) < GeometryUtils.euclidean_dist(ring_pip, wrist) * 1.2
+                pinky_curled_gun = GeometryUtils.euclidean_dist(pinky_pt, wrist) < GeometryUtils.euclidean_dist(pinky_pip, wrist) * 1.2
+
+                is_gun_pose = index_extended and middle_curled and ring_curled and pinky_curled_gun
+
+                # Deteksi snap: jarak jempol ke jari tengah
+                thumb_to_middle = GeometryUtils.euclidean_dist(thumb_pt, middle_tip)
+                prev_dist = self._snap_prev_thumb_mid_dist.get(hand_idx, thumb_to_middle)
+                self._snap_prev_thumb_mid_dist[hand_idx] = thumb_to_middle
+
+                if is_gun_pose:
+                    self._snap_gun_pose_count[hand_idx] = self._snap_gun_pose_count.get(hand_idx, 0) + 1
+
+                    # Visualisasi finger gun pose
+                    cv2.line(frame, index_pip, index_tip, (0, 180, 255), 3)
+                    cv2.circle(frame, index_tip, 8, (0, 200, 255), -1)
+                    cv2.circle(frame, thumb_pt, 6, (0, 255, 200), -1)
+
+                    # Snap terdeteksi: jempol bergerak cepat mendekat ke jari tengah
+                    snap_delta = prev_dist - thumb_to_middle
+                    gun_frames = self._snap_gun_pose_count.get(hand_idx, 0)
+                    if (snap_delta > hand_scale * 0.12
+                            and thumb_to_middle < hand_scale * 0.45
+                            and gun_frames >= 3
+                            and now - self._snap_last_trigger > self._snap_cooldown_sec):
+                        snap_gesture_detected = True
+                        snap_origin_pt = palm_center
+                else:
+                    self._snap_gun_pose_count[hand_idx] = 0
+
         # Logic Trigger Ganti Filter (Tangan Kanan)
         if right_filter_pinch_active:
             self._filter_pinch_hold_count += 1
@@ -1030,6 +1093,26 @@ class PortalProcessor:
             self.trigger_desktop_screenshot(frame.copy())
             self.last_screenshot_time = now
             self._screenshot_fired = True
+
+        # Logic Trigger Snap Blur
+        if snap_gesture_detected:
+            self._snap_blur_active = True
+            self._snap_blur_start_time = now
+            self._snap_blur_origin = snap_origin_pt
+            self._snap_last_trigger = now
+            self.flash_intensity = 0.6
+            self.toast_message = "SNAP BLUR ACTIVATED"
+            self.toast_expire_time = now + 2.0
+
+            # Sound feedback
+            def _snap_beep():
+                try:
+                    import winsound
+                    winsound.Beep(800, 40)
+                    winsound.Beep(400, 80)
+                except Exception:
+                    pass
+            threading.Thread(target=_snap_beep, daemon=True).start()
 
         # =========================================================
         # Render Geometri Berdasarkan Mode Terpilih (Tombol 'C')
@@ -1081,25 +1164,77 @@ class PortalProcessor:
                 elif len(all_hand_tips) == 1:
                     frame = self.render_portal_polygon(frame, all_hand_tips[0], self.current_filter_name)
 
+        # =========================================================
+        # Snap Blur Effect -- Progressive Gaussian blur + Shockwave Ripple
+        # =========================================================
+        if self._snap_blur_active:
+            elapsed = now - self._snap_blur_start_time
+            if elapsed < self._snap_blur_duration:
+                # Progress 0.0 -> 1.0 over duration
+                progress = elapsed / self._snap_blur_duration
+
+                # Blur yang kuat di awal, memudar perlahan (ease-out)
+                blur_strength = max(1, int((1.0 - progress ** 0.5) * 45)) | 1  # Harus ganjil
+                frame = cv2.GaussianBlur(frame, (blur_strength, blur_strength), 0)
+
+                # Shockwave ripple ring expanding from snap origin
+                ox, oy = self._snap_blur_origin
+                max_radius = int(max(self.cfg.frame_width, self.cfg.frame_height) * 0.9)
+                ring_radius = int(progress * max_radius)
+                ring_thickness = max(2, int((1.0 - progress) * 18))
+                ring_alpha = max(0.0, 1.0 - progress * 1.2)
+
+                if ring_alpha > 0.05:
+                    overlay = frame.copy()
+                    # Cincin shockwave utama
+                    cv2.circle(overlay, (ox, oy), ring_radius, (0, 200, 255), ring_thickness)
+                    # Cincin dalam lebih tipis
+                    inner_r = max(0, ring_radius - int(40 * (1.0 - progress)))
+                    if inner_r > 10:
+                        cv2.circle(overlay, (ox, oy), inner_r, (255, 255, 255), max(1, ring_thickness // 3))
+                    frame = cv2.addWeighted(overlay, ring_alpha * 0.7, frame, 1.0 - ring_alpha * 0.7, 0)
+
+                # Vignette gelap di pinggir selama blur aktif
+                vignette_strength = (1.0 - progress) * 0.35
+                if vignette_strength > 0.02:
+                    h_f, w_f = frame.shape[:2]
+                    dark_overlay = np.zeros_like(frame)
+                    cv2.rectangle(dark_overlay, (0, 0), (w_f, h_f), (0, 0, 0), -1)
+                    # Ellipse putih di tengah untuk mask vignette
+                    mask_vig = np.zeros((h_f, w_f), dtype=np.uint8)
+                    cv2.ellipse(mask_vig, (w_f // 2, h_f // 2), (int(w_f * 0.45), int(h_f * 0.45)), 0, 0, 360, 255, -1)
+                    mask_vig = cv2.GaussianBlur(mask_vig, (151, 151), 0)
+                    inv_mask = 255 - mask_vig
+                    inv_mask_3c = cv2.merge([inv_mask, inv_mask, inv_mask]).astype(np.float32) / 255.0
+                    frame = (frame.astype(np.float32) * (1.0 - inv_mask_3c * vignette_strength)).astype(np.uint8)
+            else:
+                self._snap_blur_active = False
+
         # Shutter Flash Animation
         if self.flash_intensity > 0.01:
             white_flash = np.full_like(frame, 255)
             frame = cv2.addWeighted(white_flash, self.flash_intensity, frame, 1.0 - self.flash_intensity, 0)
             self.flash_intensity = max(0.0, self.flash_intensity - 0.15)
 
-        self._draw_hud(frame, is_bowtie, right_filter_pinch_active, screenshot_gesture_active, now)
+        self._draw_hud(frame, is_bowtie, right_filter_pinch_active, screenshot_gesture_active, snap_gesture_detected, now)
         return frame
 
-    def _draw_hud(self, frame: np.ndarray, is_bowtie: bool, right_pinch: bool, screenshot_gesture: bool, now: float) -> None:
+    def _draw_hud(self, frame: np.ndarray, is_bowtie: bool, right_pinch: bool, screenshot_gesture: bool, snap_detected: bool, now: float) -> None:
         geom_name = self.current_geom_mode_name
         cv2.putText(frame, f"3D SHAPE: {geom_name.upper()} [Tekan 'C' untuk ganti bentuk]", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kanan: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
         cv2.putText(frame, "SCREENSHOT: [KIRI: Jempol+Kelingking / 'S']", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 2)
+        cv2.putText(frame, "SNAP BLUR: [Finger Gun + Snap Jempol]", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
 
         if right_pinch:
-            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         elif screenshot_gesture:
-            cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (KIRI) <<", (15, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
+            cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (KIRI) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
+        elif snap_detected:
+            cv2.putText(frame, ">> SNAP! BLUR ACTIVATED <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
+        elif self._snap_blur_active:
+            remaining = max(0.0, self._snap_blur_duration - (now - self._snap_blur_start_time))
+            cv2.putText(frame, f">> BLUR ACTIVE: {remaining:.1f}s <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 180, 255), 2)
 
         # Toast Notification Banner saat screenshot berhasil diambil
         if now < self.toast_expire_time and self.toast_message:
@@ -1168,6 +1303,7 @@ def main() -> None:
     print("  - Ganti Bentuk 3D  : Tekan 'C' (Quad, Prism, Mandala, Laser, Ribbon)")
     print("  - Ganti Filter     : TANGAN KANAN (Jempol + Kelingking) / 'N','P'")
     print("  - Screenshot Layar : TANGAN KIRI (Jempol + Kelingking) / 'S'")
+    print("  - Snap Blur        : Finger Gun (telunjuk lurus) + Snap Jempol")
     print("  - Ganti Kamera     : Tekan 'TAB' (Kamera 0 <-> Kamera 1)")
     print("  - Keluar           : Tekan 'Q'")
     print("=======================================================\n")
