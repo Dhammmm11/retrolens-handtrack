@@ -768,6 +768,7 @@ class PortalProcessor:
     def trigger_blur(self) -> None:
         """Memicu efek blur kamera murni selama 3 detik (hanya jika fitur diizinkan)."""
         if not self._blur_feature_enabled:
+            self._snap_blur_active = False
             return
         self._snap_blur_active = True
         self._snap_blur_start_time = time.time()
@@ -1158,7 +1159,7 @@ class PortalProcessor:
             self._screenshot_fired = True
 
         # Logic Trigger Snap Blur
-        if snap_gesture_detected:
+        if snap_gesture_detected and self._blur_feature_enabled:
             self.trigger_blur()
 
         # =========================================================
@@ -1214,7 +1215,7 @@ class PortalProcessor:
         # =========================================================
         # Snap Blur Effect — High-Definition Cinematic Bokeh Defocus & Organic Film Noise
         # =========================================================
-        if self._snap_blur_active:
+        if self._snap_blur_active and self._blur_feature_enabled:
             elapsed = now - self._snap_blur_start_time
             if elapsed < self._snap_blur_duration:
                 progress = elapsed / self._snap_blur_duration
@@ -1271,7 +1272,7 @@ class PortalProcessor:
     def _draw_hud(self, frame: np.ndarray, is_bowtie: bool, right_pinch: bool, screenshot_gesture: bool, snap_detected: bool, now: float) -> None:
         geom_name = self.current_geom_mode_name
         cv2.putText(frame, f"3D SHAPE: {geom_name.upper()} [Tekan 'C' untuk ganti bentuk]", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-        cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kanan: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
+        cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kiri: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
         cv2.putText(frame, "SCREENSHOT: [KIRI: Jempol+Kelingking / 'S']", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 2)
         if self._blur_feature_enabled:
             cv2.putText(frame, "BLUR NOISES: [ON] (Kiri: Tembak / 'B': Manual / 'X': Disable)", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
@@ -1279,9 +1280,9 @@ class PortalProcessor:
             cv2.putText(frame, "BLUR NOISES: [DISABLED/OFF] (Tekan 'X' untuk Mengaktifkan)", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 2)
 
         if right_pinch:
-            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (iri) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         elif screenshot_gesture:
-            cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (KIRI) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
+            cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (Kanan) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
         elif self._snap_blur_active:
             remaining = max(0.0, self._snap_blur_duration - (now - self._snap_blur_start_time))
             cv2.putText(frame, f">> BLUR NOISES AKTIF: {remaining:.1f}s <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
@@ -1342,30 +1343,41 @@ class KeyboardHandler:
     Menangani input keyboard dengan dukungan ganda:
     1. OpenCV cv2.waitKey (case-insensitive + ESC + TAB)
     2. Windows Win32 GetAsyncKeyState (bekerja bahkan jika window OpenCV kehilangan fokus)
-    Dengan debounce cerdas agar tidak berulang kali trigger saat tombol ditekan.
+    Dengan debounce cerdas berbasis waktu (350ms) agar tidak terjadi rapid toggle saat tombol ditekan.
     """
     def __init__(self):
         self._key_down_prev: Dict[int, bool] = {}
+        self._last_trigger_time: Dict[str, float] = {}
         self._user32 = ctypes.windll.user32 if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "user32") else None
 
-    def check_pressed(self, vk_code: int, cv2_key: int, char_code: str) -> bool:
+    def check_pressed(self, vk_code: int, cv2_key: int, char_code: str, debounce_sec: float = 0.35) -> bool:
+        now = time.time()
+        last_t = self._last_trigger_time.get(char_code, 0.0)
+        if now - last_t < debounce_sec:
+            return False
+
+        pressed = False
         # 1. Cek via OpenCV waitKey
         if cv2_key != 255 and cv2_key != -1:
             if char_code and len(char_code) == 1:
                 if cv2_key == ord(char_code.lower()) or cv2_key == ord(char_code.upper()):
-                    return True
-            if char_code == "ESC" and cv2_key == 27:
-                return True
-            if char_code == "TAB" and cv2_key == 9:
-                return True
+                    pressed = True
+            elif char_code == "ESC" and cv2_key == 27:
+                pressed = True
+            elif char_code == "TAB" and cv2_key == 9:
+                pressed = True
 
         # 2. Cek via Win32 GetAsyncKeyState (Global hotkey dengan debounce)
-        if self._user32:
+        if not pressed and self._user32:
             is_down = bool(self._user32.GetAsyncKeyState(vk_code) & 0x8000)
             was_down = self._key_down_prev.get(vk_code, False)
             self._key_down_prev[vk_code] = is_down
             if is_down and not was_down:
-                return True
+                pressed = True
+
+        if pressed:
+            self._last_trigger_time[char_code] = now
+            return True
 
         return False
 
