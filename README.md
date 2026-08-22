@@ -38,7 +38,7 @@ Aplikasi ini juga dilengkapi modul **Windows GDI Desktop Screen Capture Engine**
    - `hologram` (Sci-fi blue luminescence + dynamic TV static snow & tracking glitch)
    - `tv-static-nosignal` (Analog TV out-of-tune noise snow)
    - `vintage-1920-film` (Sepia silent movie with dust specks & vertical scratches)
-   - `kaleidoscope-mirror` (4-quadradial optical symmetry)
+   - `kaleidoscope-mirror` (4-quadrant radial optical symmetry)
    - `psychedelic-aura` (Solarized rainbow spectrum & hue cycling)
    - `laser-wireframe` (High-voltage cyan & gold wireframe contours)
    - Dan filter lainnya: `fire-plasma`, `night-vision`, `comic-pop-art`, `dual-tone`, `thermal`, `sketch`, `pixelate`, `glitch`, `invert`, `red-channel`, `edge`, `blur`, `cartoon`, `rainbow-wave`.
@@ -54,10 +54,10 @@ Aplikasi ini juga dilengkapi modul **Windows GDI Desktop Screen Capture Engine**
 |---|---|---|
 | **Gestur Tangan Kanan** | Jempol ↔ Kelingking | Ganti filter visual berikutnya |
 | **Gestur Tangan Kiri** | Jempol ↔ Kelingking | Screenshot layar Desktop Full HD |
-| **Gestur Tangan Kiri** | Gerakan Menembak (Finger Gun / Snap) | Picu efek kamera **Blur Noises** (3 detik) |
+| **Gestur Tangan Kiri** | Gerakan Menembak (Finger Gun / Snap) | Picu efek kamera **Blur Noises** (3 detik, saat fitur ON) |
 | **Tombol `C`** | Keyboard | Ganti Bentuk 3D *(Quad ➔ Prism ➔ Mandala ➔ Laser ➔ Ribbon)* |
-| **Tombol `B`** | Keyboard | Toggle aktif/nonaktifkan efek kamera **Blur Noises** |
-| **Tombol `X`** | Keyboard | Matikan / Nonaktifkan efek **Blur Noises** seketika |
+| **Tombol `X`** | Keyboard | **Master Switch Lock**: Nonaktifkan / Kunci Mati efek Blur selamanya (sampai ditekan `X` lagi) |
+| **Tombol `B`** | Keyboard | **Trigger Manual**: Picu / Batalkan efek kamera Blur Noises 3 detik |
 | **Tombol `N` / `P`** | Keyboard | Ganti filter manual (*Next / Previous*) |
 | **Tombol `S`** | Keyboard | Screenshot layar manual |
 | **Tombol `TAB`** | Keyboard | Beralih indeks kamera (*Kamera 0 ↔ Kamera 1*) |
