@@ -657,10 +657,10 @@ class PortalProcessor:
         self._snap_cooldown_sec: float = 2.5
         self._snap_last_trigger: float = 0.0
 
-        # Blur Effect State (Murni Blur Kamera)
+        # Blur Effect State (Murni Blur Kamera Super Pekat)
         self._snap_blur_active: bool = False
         self._snap_blur_start_time: float = 0.0
-        self._snap_blur_duration: float = 2.5  # Durasi blur dalam detik
+        self._snap_blur_duration: float = 3.0  # Durasi blur dalam detik
 
         # Shutter flash animation & Toast notification
         self.flash_intensity = 0.0
@@ -1156,16 +1156,28 @@ class PortalProcessor:
                     frame = self.render_portal_polygon(frame, all_hand_tips[0], self.current_filter_name)
 
         # =========================================================
-        # Snap Blur Effect — Murni Efek Blur Kamera (Gaussian Blur)
+        # Snap Blur Effect — Murni Blur Kamera Super Pekat (Ultra Defocus Blur)
         # =========================================================
         if self._snap_blur_active:
             elapsed = now - self._snap_blur_start_time
             if elapsed < self._snap_blur_duration:
                 progress = elapsed / self._snap_blur_duration
-                # Blur murni: transisi halus dari blur kuat kembali ke tajam
-                blur_ksize = max(1, int((1.0 - progress) * 45)) | 1
-                if blur_ksize > 1:
-                    frame = cv2.GaussianBlur(frame, (blur_ksize, blur_ksize), 0)
+                # Tetap pekat penuh di 65% durasi awal, lalu transisi halus kembali tajam
+                blur_factor = 1.0 if progress < 0.65 else (1.0 - (progress - 0.65) / 0.35)
+
+                if blur_factor > 0.02:
+                    h_f, w_f = frame.shape[:2]
+                    # Multi-scale downscale + Gaussian blur untuk efek blur yang sangat kuat/pekat
+                    ds_factor = 1.0 + blur_factor * 18.0
+                    ds_w = max(8, int(w_f / ds_factor))
+                    ds_h = max(8, int(h_f / ds_factor))
+
+                    small = cv2.resize(frame, (ds_w, ds_h), interpolation=cv2.INTER_LINEAR)
+                    k = max(3, int(blur_factor * 35)) | 1
+                    small_blurred = cv2.GaussianBlur(small, (k, k), 0)
+                    heavy_blur = cv2.resize(small_blurred, (w_f, h_f), interpolation=cv2.INTER_LINEAR)
+
+                    frame = cv2.addWeighted(heavy_blur, blur_factor, frame, 1.0 - blur_factor, 0)
             else:
                 self._snap_blur_active = False
 
