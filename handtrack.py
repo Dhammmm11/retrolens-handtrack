@@ -654,7 +654,7 @@ class PortalProcessor:
         self._snap_prev_thumb_mid_dist: Dict[int, float] = {}
         self._snap_gun_pose_count: Dict[int, int] = {}
         self._snap_pinch_contact: Dict[int, float] = {}
-        self._snap_cooldown_sec: float = 2.5
+        self._snap_cooldown_sec: float = 1.2
         self._snap_last_trigger: float = 0.0
 
         # High-Definition Blur Noises State (Cinematic Bokeh Defocus + 35mm Organic Film Grain)
@@ -982,18 +982,20 @@ class PortalProcessor:
                 pinky_pt = tips[4]        # Ujung Kelingking (20)
                 pinky_dip = smoothed[19]  # Sendi bawah kelingking
 
-                # Cek tangan spesifik:
-                # TANGAN KANAN -> Jempol + Kelingking = GANTI FILTER
-                # TANGAN KIRI  -> Jempol + Kelingking = SCREENSHOT LAYAR
-                is_right_hand = (hand_label.lower() == "right")
-                is_left_hand = (hand_label.lower() == "left")
-
-                # Fallback jika hanya 1 tangan terdeteksi dan label MediaPipe
-                if len(hand_data) == 1:
-                    if hand_label.lower() != "left":
-                        is_right_hand = True
-                    if hand_label.lower() != "right":
-                        is_left_hand = True
+                # Identifikasi Tangan Kiri vs Kanan secara akurat (Anti-Flip / Anti-Mirroring)
+                hand_center_x = palm_center[0]
+                if len(hand_data) >= 2:
+                    other_idx = 1 if hand_idx == 0 else 0
+                    other_lm = hand_data[other_idx][0]
+                    other_wrist_x = other_lm[0].x * self.cfg.frame_width
+                    is_left_hand = (wrist_pt[0] < other_wrist_x)
+                    is_right_hand = not is_left_hand
+                else:
+                    # 1 Tangan terdeteksi:
+                    # Fleksibel & responsif: Area kiri layar (< 62%) atau label 'left' -> Tangan Kiri
+                    # Area kanan layar (> 38%) atau label 'right' -> Tangan Kanan
+                    is_left_hand = (hand_center_x < self.cfg.frame_width * 0.62) or (hand_label.lower() == "left")
+                    is_right_hand = (hand_center_x > self.cfg.frame_width * 0.38) or (hand_label.lower() == "right")
 
                 dist_thumb_pinky = min(
                     GeometryUtils.euclidean_dist(thumb_pt, pinky_pt),
@@ -1032,34 +1034,28 @@ class PortalProcessor:
 
                 # =========================================================
                 # Gestur 3 (TANGAN KIRI SAJA): Gerakan Menembak (Finger Gun Snap) -> BLUR NOISES
-                # Hanya terdeteksi jika dilakukan oleh Tangan Kiri
+                # Rasio geometri scale-invariant & tahan perspektif
                 # =========================================================
                 if is_left_hand:
                     index_tip = smoothed[8]
-                    index_pip = smoothed[6]
+                    index_mcp = smoothed[5]
                     middle_tip = smoothed[12]
-                    middle_pip = smoothed[10]
+                    middle_mcp = smoothed[9]
                     ring_tip = smoothed[16]
-                    ring_pip = smoothed[14]
+                    ring_mcp = smoothed[13]
                     pinky_tip = smoothed[20]
-                    pinky_pip = smoothed[17]
-                    wrist = smoothed[0]
+                    pinky_mcp = smoothed[17]
 
-                    # Cek pose Finger Gun: Telunjuk lurus mengarah ke depan, jari lainnya tertekuk
-                    index_dist = GeometryUtils.euclidean_dist(index_tip, wrist)
-                    index_pip_dist = GeometryUtils.euclidean_dist(index_pip, wrist)
-                    middle_dist = GeometryUtils.euclidean_dist(middle_tip, wrist)
-                    middle_pip_dist = GeometryUtils.euclidean_dist(middle_pip, wrist)
-                    ring_dist = GeometryUtils.euclidean_dist(ring_tip, wrist)
-                    ring_pip_dist = GeometryUtils.euclidean_dist(ring_pip, wrist)
+                    # Rasio ekstensi relatif terhadap skala telapak tangan
+                    idx_ext = GeometryUtils.euclidean_dist(index_tip, index_mcp) / max(1.0, hand_scale)
+                    mid_curl = GeometryUtils.euclidean_dist(middle_tip, middle_mcp) / max(1.0, hand_scale)
+                    ring_curl = GeometryUtils.euclidean_dist(ring_tip, ring_mcp) / max(1.0, hand_scale)
 
-                    index_extended = index_dist > index_pip_dist * 1.15
-                    middle_curled = middle_dist < middle_pip_dist * 1.30
-                    ring_curled = ring_dist < ring_pip_dist * 1.30
-
-                    is_gun_pose = index_extended and middle_curled and ring_curled
+                    # Pose pistol: telunjuk lurus, jari tengah & manis tertekuk
+                    is_gun_pose = (idx_ext >= 0.68) and (mid_curl <= 0.82) and (ring_curl <= 0.82)
 
                     thumb_to_middle = GeometryUtils.euclidean_dist(thumb_pt, middle_tip)
+                    thumb_to_mcp = GeometryUtils.euclidean_dist(thumb_pt, middle_mcp)
                     thumb_to_index = GeometryUtils.euclidean_dist(thumb_pt, index_tip)
 
                     prev_dist_mid = self._snap_prev_thumb_mid_dist.get(hand_idx, thumb_to_middle)
@@ -1070,16 +1066,19 @@ class PortalProcessor:
                         gun_frames = self._snap_gun_pose_count.get(hand_idx, 0)
                         snap_delta = prev_dist_mid - thumb_to_middle
 
-                        # Visual Laser Aiming Crosshair di ujung telunjuk tangan kiri saat pose menembak
-                        cv2.circle(frame, index_tip, 12, (0, 255, 255), 2)
+                        # Visual Laser Aiming Crosshair di ujung telunjuk tangan kiri saat membidik
+                        reticle_r = int(14 + math.sin(now * 12.0) * 2)
+                        cv2.circle(frame, index_tip, reticle_r, (0, 255, 255), 2)
                         cv2.circle(frame, index_tip, 4, (0, 200, 255), -1)
-                        cv2.line(frame, (index_tip[0] - 18, index_tip[1]), (index_tip[0] + 18, index_tip[1]), (0, 255, 255), 1)
-                        cv2.line(frame, (index_tip[0], index_tip[1] - 18), (index_tip[0], index_tip[1] + 18), (0, 255, 255), 1)
-                        cv2.putText(frame, "READY TO SHOOT", (index_tip[0] + 18, index_tip[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
+                        cv2.line(frame, (index_tip[0] - 22, index_tip[1]), (index_tip[0] - 6, index_tip[1]), (0, 255, 255), 2)
+                        cv2.line(frame, (index_tip[0] + 6, index_tip[1]), (index_tip[0] + 22, index_tip[1]), (0, 255, 255), 2)
+                        cv2.line(frame, (index_tip[0], index_tip[1] - 22), (index_tip[0], index_tip[1] - 6), (0, 255, 255), 2)
+                        cv2.line(frame, (index_tip[0], index_tip[1] + 6), (index_tip[0], index_tip[1] + 22), (0, 255, 255), 2)
+                        cv2.putText(frame, "AIMING [SNAP THUMB TO SHOOT]", (index_tip[0] + 24, index_tip[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
-                        if (snap_delta > hand_scale * 0.08
-                                and thumb_to_middle < hand_scale * 0.50
-                                and gun_frames >= 2
+                        # Trigger Tembak: Jempol menjepret ke bawah atau menyentuh jari tengah
+                        is_thumb_down = (thumb_to_middle < hand_scale * 0.48) or (thumb_to_mcp < hand_scale * 0.48)
+                        if ((snap_delta > hand_scale * 0.05 or (is_thumb_down and gun_frames >= 2))
                                 and now - self._snap_last_trigger > self._snap_cooldown_sec):
                             snap_gesture_detected = True
                     else:
@@ -1090,8 +1089,8 @@ class PortalProcessor:
                             self._snap_pinch_contact[hand_idx] = now
                         elif hand_idx in self._snap_pinch_contact:
                             contact_time = self._snap_pinch_contact.pop(hand_idx)
-                            if (0.03 < now - contact_time < 0.30
-                                    and (thumb_to_index > dynamic_pinch_thresh * 1.25 or thumb_to_middle > dynamic_pinch_thresh * 1.25)
+                            if (0.03 < now - contact_time < 0.35
+                                    and (thumb_to_index > dynamic_pinch_thresh * 1.20 or thumb_to_middle > dynamic_pinch_thresh * 1.20)
                                     and now - self._snap_last_trigger > self._snap_cooldown_sec):
                                 snap_gesture_detected = True
 
