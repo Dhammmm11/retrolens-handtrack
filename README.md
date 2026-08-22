@@ -30,7 +30,7 @@ Aplikasi ini juga dilengkapi modul **Windows GDI Desktop Screen Capture Engine**
    - **`Magic-Mandala`**: Lingkaran sihir berputar Doctor Strange dengan bintang 8 sudut, rune geometris, dan partikel sihir mengorbit.
    - **`Plasma-Laser`**: Jembatan laser plasma ganda dan busur petir (*jagged electric arc*) di antara telunjuk kedua tangan.
    - **`3D-Dual-Ribbon`**: Pita polygonal segitiga 3D split-channel dengan warna ganda.
-3. **24 Filter Visual Real-Time**:
+4. **24 Filter Visual Real-Time**:
    - `anime-style` (Makoto Shinkai / Kyoto Animation 2D Cel-Shading & Clean Line Art)
    - `cyberpunk-neon` (Electric cyan/magenta glow & dark backing)
    - `matrix-code` (Digital code rain scanlines)
@@ -54,7 +54,7 @@ Aplikasi ini juga dilengkapi modul **Windows GDI Desktop Screen Capture Engine**
 |---|---|---|
 | **Gestur Tangan Kanan** | Jempol ↔ Kelingking | Ganti filter visual berikutnya |
 | **Gestur Tangan Kiri** | Jempol ↔ Kelingking | Screenshot layar Desktop Full HD |
-| **Gestur Jepret Layar** | Finger Gun / Pinch-Snap | Picu efek kamera **Blur Noises** (3 detik) |
+| **Gestur Tangan Kiri** | Gerakan Menembak (Finger Gun / Snap) | Picu efek kamera **Blur Noises** (3 detik) |
 | **Tombol `C`** | Keyboard | Ganti Bentuk 3D *(Quad ➔ Prism ➔ Mandala ➔ Laser ➔ Ribbon)* |
 | **Tombol `B`** | Keyboard | Picu efek kamera **Blur Noises** secara manual |
 | **Tombol `N` / `P`** | Keyboard | Ganti filter manual (*Next / Previous*) |
