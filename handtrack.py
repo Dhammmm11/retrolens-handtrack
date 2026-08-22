@@ -1280,7 +1280,7 @@ class PortalProcessor:
             cv2.putText(frame, "BLUR NOISES: [DISABLED/OFF] (Tekan 'X' untuk Mengaktifkan)", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 2)
 
         if right_pinch:
-            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (iri) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (Kiri) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         elif screenshot_gesture:
             cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (Kanan) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
         elif self._snap_blur_active:
