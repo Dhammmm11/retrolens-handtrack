@@ -657,16 +657,18 @@ class PortalProcessor:
         self._snap_cooldown_sec: float = 2.5
         self._snap_last_trigger: float = 0.0
 
-        # Blur Noises Effect State (Defocus Blur + Dynamic Analog Grain Noise)
+        # High-Definition Blur Noises State (Cinematic Bokeh Defocus + 35mm Organic Film Grain)
         self._snap_blur_active: bool = False
         self._snap_blur_start_time: float = 0.0
         self._snap_blur_duration: float = 3.0  # Durasi blur dalam detik
         
-        # Pre-generated noise textures untuk efek Blur Noises yang cepat (60+ FPS)
-        self._noise_pool = [
-            np.random.randint(90, 166, (360, 640, 3), dtype=np.uint8)
-            for _ in range(12)
-        ]
+        # Pre-generated 16 fine silver-halide organic film grain textures (pos/neg pairs) for HD Blur Noises
+        self._grain_pairs: List[Tuple[np.ndarray, np.ndarray]] = []
+        for _ in range(16):
+            raw_noise = np.random.normal(0, 22.0, (self.cfg.frame_height, self.cfg.frame_width, 3))
+            pos = np.clip(raw_noise, 0, 255).astype(np.uint8)
+            neg = np.clip(-raw_noise, 0, 255).astype(np.uint8)
+            self._grain_pairs.append((pos, neg))
 
         # Shutter flash animation & Toast notification
         self.flash_intensity = 0.0
@@ -1029,55 +1031,69 @@ class PortalProcessor:
                         cv2.circle(frame, pinky_pt, 5, (200, 120, 255), -1)
 
                 # =========================================================
-                # Gestur 3 (KEDUA TANGAN): Snap ke Layar -> BLUR EFFECT
-                # Mendeteksi gerakan menjepret jari ke arah layar:
-                # 1. Pose Finger Gun + Snap Jempol ke bawah
-                # 2. Atau Quick Pinch & Snap (Jempol + Telunjuk/Tengah)
+                # Gestur 3 (TANGAN KIRI SAJA): Gerakan Menembak (Finger Gun Snap) -> BLUR NOISES
+                # Hanya terdeteksi jika dilakukan oleh Tangan Kiri
                 # =========================================================
-                index_tip = smoothed[8]
-                index_pip = smoothed[6]
-                middle_tip = smoothed[12]
-                middle_pip = smoothed[10]
-                ring_tip = smoothed[16]
-                ring_pip = smoothed[14]
-                pinky_pip = smoothed[17]
-                wrist = smoothed[0]
+                if is_left_hand:
+                    index_tip = smoothed[8]
+                    index_pip = smoothed[6]
+                    middle_tip = smoothed[12]
+                    middle_pip = smoothed[10]
+                    ring_tip = smoothed[16]
+                    ring_pip = smoothed[14]
+                    pinky_tip = smoothed[20]
+                    pinky_pip = smoothed[17]
+                    wrist = smoothed[0]
 
-                # Cek pose Finger Gun: Telunjuk lurus, tengah & manis tertekuk
-                index_extended = GeometryUtils.euclidean_dist(index_tip, wrist) > GeometryUtils.euclidean_dist(index_pip, wrist) * 1.12
-                middle_curled = GeometryUtils.euclidean_dist(middle_tip, wrist) < GeometryUtils.euclidean_dist(middle_pip, wrist) * 1.28
-                ring_curled = GeometryUtils.euclidean_dist(ring_tip, wrist) < GeometryUtils.euclidean_dist(ring_pip, wrist) * 1.28
+                    # Cek pose Finger Gun: Telunjuk lurus mengarah ke depan, jari lainnya tertekuk
+                    index_dist = GeometryUtils.euclidean_dist(index_tip, wrist)
+                    index_pip_dist = GeometryUtils.euclidean_dist(index_pip, wrist)
+                    middle_dist = GeometryUtils.euclidean_dist(middle_tip, wrist)
+                    middle_pip_dist = GeometryUtils.euclidean_dist(middle_pip, wrist)
+                    ring_dist = GeometryUtils.euclidean_dist(ring_tip, wrist)
+                    ring_pip_dist = GeometryUtils.euclidean_dist(ring_pip, wrist)
 
-                is_gun_pose = index_extended and middle_curled and ring_curled
+                    index_extended = index_dist > index_pip_dist * 1.15
+                    middle_curled = middle_dist < middle_pip_dist * 1.30
+                    ring_curled = ring_dist < ring_pip_dist * 1.30
 
-                thumb_to_middle = GeometryUtils.euclidean_dist(thumb_pt, middle_tip)
-                thumb_to_index = GeometryUtils.euclidean_dist(thumb_pt, index_tip)
+                    is_gun_pose = index_extended and middle_curled and ring_curled
 
-                prev_dist_mid = self._snap_prev_thumb_mid_dist.get(hand_idx, thumb_to_middle)
-                self._snap_prev_thumb_mid_dist[hand_idx] = thumb_to_middle
+                    thumb_to_middle = GeometryUtils.euclidean_dist(thumb_pt, middle_tip)
+                    thumb_to_index = GeometryUtils.euclidean_dist(thumb_pt, index_tip)
 
-                # Deteksi 1: Finger Gun Snap
-                if is_gun_pose:
-                    self._snap_gun_pose_count[hand_idx] = self._snap_gun_pose_count.get(hand_idx, 0) + 1
-                    snap_delta = prev_dist_mid - thumb_to_middle
-                    gun_frames = self._snap_gun_pose_count.get(hand_idx, 0)
-                    if (snap_delta > hand_scale * 0.08
-                            and thumb_to_middle < hand_scale * 0.50
-                            and gun_frames >= 2
-                            and now - self._snap_last_trigger > self._snap_cooldown_sec):
-                        snap_gesture_detected = True
-                else:
-                    self._snap_gun_pose_count[hand_idx] = 0
+                    prev_dist_mid = self._snap_prev_thumb_mid_dist.get(hand_idx, thumb_to_middle)
+                    self._snap_prev_thumb_mid_dist[hand_idx] = thumb_to_middle
 
-                # Deteksi 2: Snap Jentik Jari (Pinch kontak cepat lalu lepas)
-                if thumb_to_index < dynamic_pinch_thresh * 0.9 or thumb_to_middle < dynamic_pinch_thresh * 0.9:
-                    self._snap_pinch_contact[hand_idx] = now
-                elif hand_idx in self._snap_pinch_contact:
-                    contact_time = self._snap_pinch_contact.pop(hand_idx)
-                    if (0.03 < now - contact_time < 0.30
-                            and (thumb_to_index > dynamic_pinch_thresh * 1.25 or thumb_to_middle > dynamic_pinch_thresh * 1.25)
-                            and now - self._snap_last_trigger > self._snap_cooldown_sec):
-                        snap_gesture_detected = True
+                    if is_gun_pose:
+                        self._snap_gun_pose_count[hand_idx] = self._snap_gun_pose_count.get(hand_idx, 0) + 1
+                        gun_frames = self._snap_gun_pose_count.get(hand_idx, 0)
+                        snap_delta = prev_dist_mid - thumb_to_middle
+
+                        # Visual Laser Aiming Crosshair di ujung telunjuk tangan kiri saat pose menembak
+                        cv2.circle(frame, index_tip, 12, (0, 255, 255), 2)
+                        cv2.circle(frame, index_tip, 4, (0, 200, 255), -1)
+                        cv2.line(frame, (index_tip[0] - 18, index_tip[1]), (index_tip[0] + 18, index_tip[1]), (0, 255, 255), 1)
+                        cv2.line(frame, (index_tip[0], index_tip[1] - 18), (index_tip[0], index_tip[1] + 18), (0, 255, 255), 1)
+                        cv2.putText(frame, "READY TO SHOOT", (index_tip[0] + 18, index_tip[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
+
+                        if (snap_delta > hand_scale * 0.08
+                                and thumb_to_middle < hand_scale * 0.50
+                                and gun_frames >= 2
+                                and now - self._snap_last_trigger > self._snap_cooldown_sec):
+                            snap_gesture_detected = True
+                    else:
+                        self._snap_gun_pose_count[hand_idx] = 0
+
+                        # Deteksi Alternatif: Quick Pinch-Snap Jentik Jari Tangan Kiri
+                        if thumb_to_index < dynamic_pinch_thresh * 0.9 or thumb_to_middle < dynamic_pinch_thresh * 0.9:
+                            self._snap_pinch_contact[hand_idx] = now
+                        elif hand_idx in self._snap_pinch_contact:
+                            contact_time = self._snap_pinch_contact.pop(hand_idx)
+                            if (0.03 < now - contact_time < 0.30
+                                    and (thumb_to_index > dynamic_pinch_thresh * 1.25 or thumb_to_middle > dynamic_pinch_thresh * 1.25)
+                                    and now - self._snap_last_trigger > self._snap_cooldown_sec):
+                                snap_gesture_detected = True
 
         # Logic Trigger Ganti Filter (Tangan Kanan)
         if right_filter_pinch_active:
@@ -1162,33 +1178,48 @@ class PortalProcessor:
                     frame = self.render_portal_polygon(frame, all_hand_tips[0], self.current_filter_name)
 
         # =========================================================
-        # Snap Blur Effect — Efek Blur Noises (Defocus Blur + Analog Grain Noise)
+        # Snap Blur Effect — High-Definition Cinematic Bokeh Defocus & Organic Film Noise
         # =========================================================
         if self._snap_blur_active:
             elapsed = now - self._snap_blur_start_time
             if elapsed < self._snap_blur_duration:
                 progress = elapsed / self._snap_blur_duration
-                # Blur tetap pekat di 60% durasi awal, lalu meluruh halus kembali normal
-                blur_factor = 1.0 if progress < 0.60 else (1.0 - (progress - 0.60) / 0.40)
+                # Blur tetap pekat di 65% durasi awal, lalu meluruh halus kembali normal
+                blur_factor = 1.0 if progress < 0.65 else (1.0 - (progress - 0.65) / 0.35)
 
                 if blur_factor > 0.02:
                     h_f, w_f = frame.shape[:2]
-                    # 1. Defocus base blur
-                    ds_factor = 1.0 + blur_factor * 15.0
+                    
+                    # 1. Multi-Scale Optical Bokeh Defocus
+                    ds_factor = 1.0 + blur_factor * 14.0
                     ds_w = max(16, int(w_f / ds_factor))
                     ds_h = max(16, int(h_f / ds_factor))
 
                     small = cv2.resize(frame, (ds_w, ds_h), interpolation=cv2.INTER_LINEAR)
-                    k = max(3, int(blur_factor * 31)) | 1
+                    k = max(3, int(blur_factor * 29)) | 1
                     small_blurred = cv2.GaussianBlur(small, (k, k), 0)
                     base_blur = cv2.resize(small_blurred, (w_f, h_f), interpolation=cv2.INTER_LINEAR)
 
-                    # 2. Dynamic Analog Noise Texture Blend (Efek Blur Noises)
-                    noise_idx = int((now * 36) % len(self._noise_pool))
-                    noise_scaled = cv2.resize(self._noise_pool[noise_idx], (w_f, h_f), interpolation=cv2.INTER_NEAREST)
+                    # 2. Chromatic Dispersion Bokeh (Anamorphic Lens Out-of-Focus Aberration)
+                    shift = int(round(blur_factor * 3.5))
+                    if shift > 0:
+                        b_ch, g_ch, r_ch = cv2.split(base_blur)
+                        r_shifted = np.roll(r_ch, shift, axis=1)
+                        b_shifted = np.roll(b_ch, -shift, axis=1)
+                        base_blur = cv2.merge([b_shifted, g_ch, r_shifted])
 
-                    noise_weight = float(np.clip(blur_factor * 0.28, 0.0, 0.35))
-                    noisy_blur = cv2.addWeighted(base_blur, 1.0 - noise_weight, noise_scaled, noise_weight, int(-18 * blur_factor))
+                    # 3. High-Definition 35mm Silver-Halide Organic Film Grain Noise
+                    if self._grain_pairs:
+                        g_idx = int((now * 42) % len(self._grain_pairs))
+                        pos_g, neg_g = self._grain_pairs[g_idx]
+
+                        scaled_pos = cv2.convertScaleAbs(pos_g, alpha=blur_factor)
+                        scaled_neg = cv2.convertScaleAbs(neg_g, alpha=blur_factor)
+
+                        noisy_blur = cv2.add(base_blur, scaled_pos)
+                        noisy_blur = cv2.subtract(noisy_blur, scaled_neg)
+                    else:
+                        noisy_blur = base_blur
 
                     frame = cv2.addWeighted(noisy_blur, blur_factor, frame, 1.0 - blur_factor, 0)
             else:
@@ -1208,7 +1239,7 @@ class PortalProcessor:
         cv2.putText(frame, f"3D SHAPE: {geom_name.upper()} [Tekan 'C' untuk ganti bentuk]", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kanan: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
         cv2.putText(frame, "SCREENSHOT: [KIRI: Jempol+Kelingking / 'S']", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 2)
-        cv2.putText(frame, "BLUR NOISES: [Jepret Tangan ke Layar / 'B']", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
+        cv2.putText(frame, "BLUR NOISES: [KIRI: Tembak/Jepret Layar / 'B']", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
 
         if right_pinch:
             cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
@@ -1319,7 +1350,7 @@ def main() -> None:
     print("  - Ganti Bentuk 3D  : Tekan 'C' (Quad, Prism, Mandala, Laser, Ribbon)")
     print("  - Ganti Filter     : TANGAN KANAN (Jempol + Kelingking) / 'N','P'")
     print("  - Screenshot Layar : TANGAN KIRI (Jempol + Kelingking) / 'S'")
-    print("  - Blur Noises      : Jepret Tangan ke Layar / Tekan 'B'")
+    print("  - Blur Noises      : TANGAN KIRI (Gerakan Menembak) / Tekan 'B'")
     print("  - Ganti Kamera     : Tekan 'TAB' (Kamera 0 <-> Kamera 1)")
     print("  - Keluar           : Tekan 'Q' atau 'ESC'")
     print("=======================================================\n")
