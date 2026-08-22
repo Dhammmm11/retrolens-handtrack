@@ -1,0 +1,34 @@
+# =============================================================================
+# RetroLens Handtrack - Git Ignore Rules
+# =============================================================================
+
+# PRIVASI: Abaikan semua foto tangkapan layar / screenshots
+screenshots/
+screenshots/*
+*.png
+*.jpg
+*.jpeg
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# Model Weights (Auto-downloaded on first run)
+*.task
+hand_landmarker.task
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Temporary Files
+Thumbs.db
+Desktop.ini
+.DS_Store
