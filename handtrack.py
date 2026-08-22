@@ -657,10 +657,16 @@ class PortalProcessor:
         self._snap_cooldown_sec: float = 2.5
         self._snap_last_trigger: float = 0.0
 
-        # Blur Effect State (Murni Blur Kamera Super Pekat)
+        # Blur Noises Effect State (Defocus Blur + Dynamic Analog Grain Noise)
         self._snap_blur_active: bool = False
         self._snap_blur_start_time: float = 0.0
         self._snap_blur_duration: float = 3.0  # Durasi blur dalam detik
+        
+        # Pre-generated noise textures untuk efek Blur Noises yang cepat (60+ FPS)
+        self._noise_pool = [
+            np.random.randint(90, 166, (360, 640, 3), dtype=np.uint8)
+            for _ in range(12)
+        ]
 
         # Shutter flash animation & Toast notification
         self.flash_intensity = 0.0
@@ -1156,28 +1162,35 @@ class PortalProcessor:
                     frame = self.render_portal_polygon(frame, all_hand_tips[0], self.current_filter_name)
 
         # =========================================================
-        # Snap Blur Effect — Murni Blur Kamera Super Pekat (Ultra Defocus Blur)
+        # Snap Blur Effect — Efek Blur Noises (Defocus Blur + Analog Grain Noise)
         # =========================================================
         if self._snap_blur_active:
             elapsed = now - self._snap_blur_start_time
             if elapsed < self._snap_blur_duration:
                 progress = elapsed / self._snap_blur_duration
-                # Tetap pekat penuh di 65% durasi awal, lalu transisi halus kembali tajam
-                blur_factor = 1.0 if progress < 0.65 else (1.0 - (progress - 0.65) / 0.35)
+                # Blur tetap pekat di 60% durasi awal, lalu meluruh halus kembali normal
+                blur_factor = 1.0 if progress < 0.60 else (1.0 - (progress - 0.60) / 0.40)
 
                 if blur_factor > 0.02:
                     h_f, w_f = frame.shape[:2]
-                    # Multi-scale downscale + Gaussian blur untuk efek blur yang sangat kuat/pekat
-                    ds_factor = 1.0 + blur_factor * 18.0
-                    ds_w = max(8, int(w_f / ds_factor))
-                    ds_h = max(8, int(h_f / ds_factor))
+                    # 1. Defocus base blur
+                    ds_factor = 1.0 + blur_factor * 15.0
+                    ds_w = max(16, int(w_f / ds_factor))
+                    ds_h = max(16, int(h_f / ds_factor))
 
                     small = cv2.resize(frame, (ds_w, ds_h), interpolation=cv2.INTER_LINEAR)
-                    k = max(3, int(blur_factor * 35)) | 1
+                    k = max(3, int(blur_factor * 31)) | 1
                     small_blurred = cv2.GaussianBlur(small, (k, k), 0)
-                    heavy_blur = cv2.resize(small_blurred, (w_f, h_f), interpolation=cv2.INTER_LINEAR)
+                    base_blur = cv2.resize(small_blurred, (w_f, h_f), interpolation=cv2.INTER_LINEAR)
 
-                    frame = cv2.addWeighted(heavy_blur, blur_factor, frame, 1.0 - blur_factor, 0)
+                    # 2. Dynamic Analog Noise Texture Blend (Efek Blur Noises)
+                    noise_idx = int((now * 36) % len(self._noise_pool))
+                    noise_scaled = cv2.resize(self._noise_pool[noise_idx], (w_f, h_f), interpolation=cv2.INTER_NEAREST)
+
+                    noise_weight = float(np.clip(blur_factor * 0.28, 0.0, 0.35))
+                    noisy_blur = cv2.addWeighted(base_blur, 1.0 - noise_weight, noise_scaled, noise_weight, int(-18 * blur_factor))
+
+                    frame = cv2.addWeighted(noisy_blur, blur_factor, frame, 1.0 - blur_factor, 0)
             else:
                 self._snap_blur_active = False
 
@@ -1195,7 +1208,7 @@ class PortalProcessor:
         cv2.putText(frame, f"3D SHAPE: {geom_name.upper()} [Tekan 'C' untuk ganti bentuk]", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kanan: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
         cv2.putText(frame, "SCREENSHOT: [KIRI: Jempol+Kelingking / 'S']", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 2)
-        cv2.putText(frame, "BLUR KAMERA: [Jepret Tangan ke Layar / 'B']", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
+        cv2.putText(frame, "BLUR NOISES: [Jepret Tangan ke Layar / 'B']", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
 
         if right_pinch:
             cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
@@ -1203,7 +1216,7 @@ class PortalProcessor:
             cv2.putText(frame, ">> GESTUR SCREENSHOT: MENGAMBIL FOTO LAYAR (KIRI) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
         elif self._snap_blur_active:
             remaining = max(0.0, self._snap_blur_duration - (now - self._snap_blur_start_time))
-            cv2.putText(frame, f">> BLUR KAMERA AKTIF: {remaining:.1f}s <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
+            cv2.putText(frame, f">> BLUR NOISES AKTIF: {remaining:.1f}s <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
 
         # Toast Notification Banner saat screenshot berhasil diambil
         if now < self.toast_expire_time and self.toast_message:
@@ -1256,9 +1269,43 @@ def open_active_camera(preferred_idx: int = 1) -> Tuple[cv2.VideoCapture, int]:
     return cap, 0
 
 
+class KeyboardHandler:
+    """
+    Menangani input keyboard dengan dukungan ganda:
+    1. OpenCV cv2.waitKey (case-insensitive + ESC + TAB)
+    2. Windows Win32 GetAsyncKeyState (bekerja bahkan jika window OpenCV kehilangan fokus)
+    Dengan debounce cerdas agar tidak berulang kali trigger saat tombol ditekan.
+    """
+    def __init__(self):
+        self._key_down_prev: Dict[int, bool] = {}
+        self._user32 = ctypes.windll.user32 if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "user32") else None
+
+    def check_pressed(self, vk_code: int, cv2_key: int, char_code: str) -> bool:
+        # 1. Cek via OpenCV waitKey
+        if cv2_key != 255 and cv2_key != -1:
+            if char_code and len(char_code) == 1:
+                if cv2_key == ord(char_code.lower()) or cv2_key == ord(char_code.upper()):
+                    return True
+            if char_code == "ESC" and cv2_key == 27:
+                return True
+            if char_code == "TAB" and cv2_key == 9:
+                return True
+
+        # 2. Cek via Win32 GetAsyncKeyState (Global hotkey dengan debounce)
+        if self._user32:
+            is_down = bool(self._user32.GetAsyncKeyState(vk_code) & 0x8000)
+            was_down = self._key_down_prev.get(vk_code, False)
+            self._key_down_prev[vk_code] = is_down
+            if is_down and not was_down:
+                return True
+
+        return False
+
+
 def main() -> None:
     cfg = PipelineConfig()
     processor = PortalProcessor(cfg)
+    kb = KeyboardHandler()
     
     cap, current_cam_idx = open_active_camera(preferred_idx=1)
 
@@ -1272,9 +1319,9 @@ def main() -> None:
     print("  - Ganti Bentuk 3D  : Tekan 'C' (Quad, Prism, Mandala, Laser, Ribbon)")
     print("  - Ganti Filter     : TANGAN KANAN (Jempol + Kelingking) / 'N','P'")
     print("  - Screenshot Layar : TANGAN KIRI (Jempol + Kelingking) / 'S'")
-    print("  - Blur Kamera      : Jepret Tangan ke Layar / Tekan 'B'")
+    print("  - Blur Noises      : Jepret Tangan ke Layar / Tekan 'B'")
     print("  - Ganti Kamera     : Tekan 'TAB' (Kamera 0 <-> Kamera 1)")
-    print("  - Keluar           : Tekan 'Q'")
+    print("  - Keluar           : Tekan 'Q' atau 'ESC'")
     print("=======================================================\n")
 
     while True:
@@ -1286,25 +1333,39 @@ def main() -> None:
         out_frame = processor.process_frame(frame)
         cv2.imshow("RetroLens Engine", out_frame)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        cv2_key = cv2.waitKey(1) & 0xFF
+
+        # Exit: 'Q' atau 'ESC'
+        if kb.check_pressed(0x51, cv2_key, "Q") or kb.check_pressed(0x1B, cv2_key, "ESC"):
+            print("[INFO] Menutup program...")
             break
-        elif key == ord("c"):
+        # Ganti Mode Bentuk 3D: 'C'
+        elif kb.check_pressed(0x43, cv2_key, "C"):
             processor.cycle_geometry_mode(1)
             print(f"[INFO] Bentuk 3D aktif: {processor.current_geom_mode_name}")
-        elif key == ord("n"):
+        # Filter Berikutnya: 'N'
+        elif kb.check_pressed(0x4E, cv2_key, "N"):
             processor.cycle_filter(1)
-        elif key == ord("p"):
+            print(f"[INFO] Filter aktif: {processor.current_filter_name}")
+        # Filter Sebelumnya: 'P'
+        elif kb.check_pressed(0x50, cv2_key, "P"):
             processor.cycle_filter(-1)
-        elif key == ord("s"):
+            print(f"[INFO] Filter aktif: {processor.current_filter_name}")
+        # Screenshot Layar: 'S'
+        elif kb.check_pressed(0x53, cv2_key, "S"):
             processor.trigger_desktop_screenshot(out_frame)
-        elif key == ord("b"):
+        # Blur Noises: 'B'
+        elif kb.check_pressed(0x42, cv2_key, "B"):
             processor.trigger_blur()
-        elif key == 9:  # TAB key: switch camera index
+        # Ganti Kamera: 'TAB'
+        elif kb.check_pressed(0x09, cv2_key, "TAB"):
             next_idx = 0 if current_cam_idx == 1 else 1
-            print(f"[INFO] Beralih ke Kamera Index {next_idx}...")
-            cap.release()
-            cap, current_cam_idx = open_active_camera(preferred_idx=next_idx)
+            print(f"[INFO] Mencoba beralih ke Kamera Index {next_idx}...")
+            test_cap, actual_idx = open_active_camera(preferred_idx=next_idx)
+            if test_cap.isOpened():
+                cap.release()
+                cap = test_cap
+                current_cam_idx = actual_idx
 
     cap.release()
     cv2.destroyAllWindows()
