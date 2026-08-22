@@ -658,6 +658,7 @@ class PortalProcessor:
         self._snap_last_trigger: float = 0.0
 
         # High-Definition Blur Noises State (Cinematic Bokeh Defocus + 35mm Organic Film Grain)
+        self._blur_feature_enabled: bool = True  # Master Switch: True = aktif, False = disable selamanya (Toggle via 'X')
         self._snap_blur_active: bool = False
         self._snap_blur_start_time: float = 0.0
         self._snap_blur_duration: float = 3.0  # Durasi blur dalam detik
@@ -749,8 +750,25 @@ class PortalProcessor:
 
         self.toast_expire_time = time.time() + 3.0
 
+    def toggle_blur_master(self) -> bool:
+        """
+        Master Lock Switch (Tombol 'X'):
+        Disable / Enable fitur blur kamera secara permanen hingga ditekan lagi.
+        Jika di-disable, gestur tangan kiri & tombol 'B' tidak akan memicu blur sama sekali.
+        """
+        self._blur_feature_enabled = not self._blur_feature_enabled
+        if not self._blur_feature_enabled:
+            self.stop_blur()
+            self.toast_message = "FITUR BLUR NOISES: DISABLED (Terkunci Mati)"
+        else:
+            self.toast_message = "FITUR BLUR NOISES: ENABLED (Aktif)"
+        self.toast_expire_time = time.time() + 2.5
+        return self._blur_feature_enabled
+
     def trigger_blur(self) -> None:
-        """Memicu efek blur kamera murni selama durasi yang ditentukan."""
+        """Memicu efek blur kamera murni selama 3 detik (hanya jika fitur diizinkan)."""
+        if not self._blur_feature_enabled:
+            return
         self._snap_blur_active = True
         self._snap_blur_start_time = time.time()
         self._snap_last_trigger = time.time()
@@ -761,7 +779,11 @@ class PortalProcessor:
         self._snap_blur_start_time = 0.0
 
     def toggle_blur(self) -> None:
-        """Toggle aktif/nonaktif efek blur kamera."""
+        """Tombol 'B': Menyalakan atau membatalkan trigger blur 3 detik saat ini."""
+        if not self._blur_feature_enabled:
+            self.toast_message = "BLUR TERKUNCI MATI (Tekan 'X' untuk Aktifkan)"
+            self.toast_expire_time = time.time() + 2.0
+            return
         if self._snap_blur_active:
             self.stop_blur()
         else:
@@ -1044,9 +1066,9 @@ class PortalProcessor:
 
                 # =========================================================
                 # Gestur 3 (TANGAN KIRI SAJA): Gerakan Menembak (Finger Gun Snap) -> BLUR NOISES
-                # Hanya terdeteksi jika dilakukan oleh Tangan Kiri
+                # Hanya terdeteksi jika dilakukan oleh Tangan Kiri dan fitur Blur sedang ENABLED
                 # =========================================================
-                if is_left_hand:
+                if is_left_hand and self._blur_feature_enabled:
                     index_tip = smoothed[8]
                     index_pip = smoothed[6]
                     middle_tip = smoothed[12]
@@ -1251,7 +1273,10 @@ class PortalProcessor:
         cv2.putText(frame, f"3D SHAPE: {geom_name.upper()} [Tekan 'C' untuk ganti bentuk]", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         cv2.putText(frame, f"FILTER: {self.current_filter_name.upper()} [Kanan: Jempol+Kelingking]", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
         cv2.putText(frame, "SCREENSHOT: [KIRI: Jempol+Kelingking / 'S']", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 2)
-        cv2.putText(frame, "BLUR NOISES: [KIRI: Tembak / 'B' Toggle / 'X' Matikan]", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
+        if self._blur_feature_enabled:
+            cv2.putText(frame, "BLUR NOISES: [ON] (Kiri: Tembak / 'B': Manual / 'X': Disable)", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 200, 255), 2)
+        else:
+            cv2.putText(frame, "BLUR NOISES: [DISABLED/OFF] (Tekan 'X' untuk Mengaktifkan)", (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 2)
 
         if right_pinch:
             cv2.putText(frame, ">> GESTUR TERDETEKSI: GANTI FILTER (KANAN) <<", (15, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
@@ -1362,7 +1387,7 @@ def main() -> None:
     print("  - Ganti Bentuk 3D  : Tekan 'C' (Quad, Prism, Mandala, Laser, Ribbon)")
     print("  - Ganti Filter     : TANGAN KANAN (Jempol + Kelingking) / 'N','P'")
     print("  - Screenshot Layar : TANGAN KIRI (Jempol + Kelingking) / 'S'")
-    print("  - Blur Noises      : TANGAN KIRI (Gerakan Menembak) / 'B' (Toggle) / 'X' (Matikan)")
+    print("  - Blur Noises      : TANGAN KIRI (Gerakan Menembak) / 'B' (Manual) / 'X' (Master ON/OFF)")
     print("  - Ganti Kamera     : Tekan 'TAB' (Kamera 0 <-> Kamera 1)")
     print("  - Keluar           : Tekan 'Q' atau 'ESC'")
     print("=======================================================\n")
@@ -1397,12 +1422,13 @@ def main() -> None:
         # Screenshot Layar: 'S'
         elif kb.check_pressed(0x53, cv2_key, "S"):
             processor.trigger_desktop_screenshot(out_frame)
-        # Blur Noises Toggle: 'B'
+        # Blur Noises Trigger/Cancel Manual: 'B'
         elif kb.check_pressed(0x42, cv2_key, "B"):
             processor.toggle_blur()
-        # Matikan Blur Noises Seketika: 'X'
+        # Master Switch Disable / Enable Fitur Blur Selamanya: 'X'
         elif kb.check_pressed(0x58, cv2_key, "X"):
-            processor.stop_blur()
+            is_enabled = processor.toggle_blur_master()
+            print(f"[INFO] Master Fitur Blur Noises: {'ENABLED (Aktif)' if is_enabled else 'DISABLED (Terkunci Mati Selamanya sampai ditekan X lagi)'}")
         # Ganti Kamera: 'TAB'
         elif kb.check_pressed(0x09, cv2_key, "TAB"):
             next_idx = 0 if current_cam_idx == 1 else 1
